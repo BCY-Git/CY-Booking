@@ -17,7 +17,7 @@ import {
   Upload,
   Wallet,
 } from 'lucide-react-native';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Modal,
@@ -35,10 +35,13 @@ import {
   markDuplicates,
   parseBillCsv,
   sampleAlipayCsv,
-  sampleTransactions,
   sampleWechatCsv,
   type Transaction,
 } from '@cy-booking/core';
+import {
+  loadOrSeedTransactions,
+  saveTransactions,
+} from './lib/transactions-store';
 
 type TabKey = 'home' | 'import' | 'stats' | 'settings';
 
@@ -95,9 +98,10 @@ const accounts = ['微信支付', '支付宝', '招商银行', '现金'];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('home');
-  const [transactions, setTransactions] = useState<Transaction[]>(sampleTransactions);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [preview, setPreview] = useState<Transaction[]>([]);
   const [importStatus, setImportStatus] = useState('选择微信/支付宝 CSV，或先载入样例账单');
+  const [storageStatus, setStorageStatus] = useState('正在读取本地账本');
   const [isComposerOpen, setComposerOpen] = useState(false);
   const [draft, setDraft] = useState<DraftTransaction>({
     title: '',
@@ -105,6 +109,32 @@ export default function App() {
     category: '餐饮',
     account: '微信支付',
   });
+
+  useEffect(() => {
+    let isMounted = true;
+
+    loadOrSeedTransactions()
+      .then((records) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setTransactions(records);
+        setStorageStatus(`本地已保存 ${records.length} 笔`);
+      })
+      .catch((error) => {
+        if (!isMounted) {
+          return;
+        }
+
+        setStorageStatus('本地账本读取失败');
+        Alert.alert('读取失败', error instanceof Error ? error.message : '无法读取本地账本');
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const totals = useMemo(() => {
     return transactions.reduce(
@@ -164,15 +194,18 @@ export default function App() {
     }
   };
 
-  const handleAddTransaction = () => {
+  const handleAddTransaction = async () => {
     const amount = Number.parseFloat(draft.amount);
 
     if (!draft.title.trim() || Number.isNaN(amount) || amount <= 0) {
       return;
     }
 
+    const now = new Date();
+    const nowText = now.toISOString().slice(0, 19).replace('T', ' ');
+    const manualId = `manual_${now.getTime()}`;
     const nextTransaction: Transaction = {
-      id: `manual_${Date.now()}`,
+      id: manualId,
       bookId: 'default',
       title: draft.title.trim(),
       merchant: draft.title.trim(),
@@ -181,26 +214,42 @@ export default function App() {
       category: draft.category,
       account: draft.account,
       source: 'manual',
-      occurredAt: '刚刚',
-      sourceHash: `manual_${Date.now()}`,
+      occurredAt: nowText,
+      sourceHash: manualId,
       confidence: 1,
       status: 'ready',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
       version: 1,
       deviceId: 'mobile-manual',
     };
+
+    try {
+      await saveTransactions([nextTransaction]);
+      setStorageStatus('刚刚保存 1 笔');
+    } catch (error) {
+      Alert.alert('保存失败', error instanceof Error ? error.message : '无法写入本地账本');
+      return;
+    }
 
     setTransactions((current) => [nextTransaction, ...current]);
     setDraft({ title: '', amount: '', category: '餐饮', account: '微信支付' });
     setComposerOpen(false);
   };
 
-  const handleConfirmImport = () => {
+  const handleConfirmImport = async () => {
     const nextRecords = preview.filter((item) => item.status !== 'duplicate');
 
     if (nextRecords.length === 0) {
       setImportStatus('没有可入账的交易');
+      return;
+    }
+
+    try {
+      await saveTransactions(nextRecords);
+      setStorageStatus(`刚刚保存 ${nextRecords.length} 笔`);
+    } catch (error) {
+      Alert.alert('保存失败', error instanceof Error ? error.message : '无法写入本地账本');
       return;
     }
 
@@ -236,6 +285,7 @@ export default function App() {
               onAdd={() => setComposerOpen(true)}
               onImport={() => setActiveTab('import')}
               onSearch={() => setActiveTab('stats')}
+              storageStatus={storageStatus}
               transactions={transactions}
               totals={totals}
             />
@@ -276,6 +326,7 @@ function HomeScreen({
   onAdd,
   onImport,
   onSearch,
+  storageStatus,
   transactions,
   totals,
 }: {
@@ -284,6 +335,7 @@ function HomeScreen({
   onAdd: () => void;
   onImport: () => void;
   onSearch: () => void;
+  storageStatus: string;
   transactions: Transaction[];
   totals: { expense: number; income: number };
 }) {
@@ -294,10 +346,11 @@ function HomeScreen({
           <Text style={styles.summaryLabel}>本月净额</Text>
           <View style={styles.syncPill}>
             <Cloud color={colors.accent} size={14} strokeWidth={2.2} />
-            <Text style={styles.syncPillText}>本地模式</Text>
+            <Text style={styles.syncPillText}>SQLite</Text>
           </View>
         </View>
         <Text style={styles.balanceText}>{formatSignedMoney(balance)}</Text>
+        <Text style={styles.storageStatusText}>{storageStatus}</Text>
         <View style={styles.metricRow}>
           <Metric label="支出" value={formatMoney(totals.expense)} tone="expense" />
           <Metric label="收入" value={formatMoney(totals.income)} tone="income" />
@@ -313,9 +366,16 @@ function HomeScreen({
 
       <SectionHeader title="最近流水" action="全部" />
       <View style={styles.transactionList}>
-        {transactions.map((transaction) => (
-          <TransactionRow key={transaction.id} transaction={transaction} />
-        ))}
+        {transactions.length === 0 ? (
+          <View style={styles.emptyPreview}>
+            <Text style={styles.emptyPreviewTitle}>正在准备本地账本</Text>
+            <Text style={styles.emptyPreviewCopy}>首次启动会写入几条样例交易，之后会从 SQLite 读取。</Text>
+          </View>
+        ) : (
+          transactions.map((transaction) => (
+            <TransactionRow key={transaction.id} transaction={transaction} />
+          ))
+        )}
       </View>
     </View>
   );
@@ -886,6 +946,13 @@ const styles = StyleSheet.create({
     fontWeight: '900',
     letterSpacing: 0,
     marginTop: 14,
+  },
+  storageStatusText: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0,
+    marginTop: 8,
   },
   metricRow: {
     flexDirection: 'row',

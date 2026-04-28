@@ -33,12 +33,13 @@ CY-Booking 的主力体验应该放在移动端。Web 端可以保留为后续�
 - 重复交易不入账。
 - 确认后写入当前本地账本状态。
 - 首页和统计页实时更新。
+- iOS/Android 使用 SQLite；Web 预览使用 localStorage fallback。
 
 ## 后续阶段
 
 ### 阶段二：本地持久化
 
-- 接入 Expo SQLite 或 WatermelonDB。
+- 扩展 Expo SQLite 表结构。
 - 保存交易、分类、账户和导入历史。
 - App 重启后保留数据。
 
