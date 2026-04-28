@@ -7,6 +7,8 @@
 
 # Node / NestJS
 node_modules/
+.next/
+*.tsbuildinfo
 dist/
 coverage/
 .env

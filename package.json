@@ -1,0 +1,14 @@
+{
+  "name": "cy-booking",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace @cy-booking/web run dev",
+    "build:web": "npm --workspace @cy-booking/web run build",
+    "lint:web": "npm --workspace @cy-booking/web run lint"
+  }
+}

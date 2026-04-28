@@ -12,7 +12,8 @@ CY-Booking 是一个本地优先的智能记账 App 项目，核心方向是账�
 ## 推荐技术栈
 
 ```txt
-App: Flutter
+Web: Next.js
+App: Expo / React Native 或 Flutter
 Local DB: SQLite / Drift
 Backend: NestJS
 Database: PostgreSQL
@@ -28,6 +29,39 @@ AI: 规则词库优先，后续接 LLM
 - [MVP 产品与技术方案](./docs/mvp-product-tech-plan.md)
 
 ## 开发启动
+
+### Web MVP
+
+Web 端代码位于：
+
+- [apps/web](./apps/web)
+- [packages/core](./packages/core)
+
+本机运行：
+
+```bash
+npm install
+npm run dev:web
+```
+
+访问：
+
+```txt
+http://localhost:3000
+```
+
+当前 Web MVP 已包含：
+
+- 本月收支概览
+- 账单 CSV 上传入口
+- 微信/支付宝样例账单解析
+- 导入预览确认
+- 分类修正
+- 重复交易提示
+- 交易流水
+- 分类统计
+
+### 移动端原型
 
 当前已启动移动端 MVP，代码位于：
 
@@ -58,8 +92,8 @@ http://localhost:8081
 
 ## 下一步
 
-1. 把交易、账户、分类拆成独立 TypeScript 模型。
-2. 接入本地持久化。
-3. 实现微信/支付宝 CSV 解析器原型。
-4. 将导入预览从样例数据改为真实解析结果。
+1. 把 Web MVP 的会话状态替换为本地持久化。
+2. 增加 XLSX/PDF 解析入口。
+3. 接入真实脱敏账单样本做兼容性测试。
+4. 将移动端复用 `packages/core` 的解析逻辑。
 5. 再决定是否同步启动 NestJS 后端。
