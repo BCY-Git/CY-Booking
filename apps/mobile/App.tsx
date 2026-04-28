@@ -1,4 +1,6 @@
 import { StatusBar } from 'expo-status-bar';
+import * as DocumentPicker from 'expo-document-picker';
+import * as FileSystem from 'expo-file-system/legacy';
 import {
   BarChart3,
   Check,
@@ -17,6 +19,7 @@ import {
 } from 'lucide-react-native';
 import { useMemo, useState } from 'react';
 import {
+  Alert,
   Modal,
   Platform,
   Pressable,
@@ -27,23 +30,17 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import {
+  expenseCategories,
+  markDuplicates,
+  parseBillCsv,
+  sampleAlipayCsv,
+  sampleTransactions,
+  sampleWechatCsv,
+  type Transaction,
+} from '@cy-booking/core';
 
 type TabKey = 'home' | 'import' | 'stats' | 'settings';
-type Direction = 'expense' | 'income' | 'transfer';
-type Source = 'manual' | 'wechat' | 'alipay' | 'bank' | 'ocr';
-
-type Transaction = {
-  id: string;
-  title: string;
-  merchant: string;
-  amount: number;
-  direction: Direction;
-  category: string;
-  account: string;
-  source: Source;
-  occurredAt: string;
-  confidence?: number;
-};
 
 type DraftTransaction = {
   title: string;
@@ -65,96 +62,6 @@ const colors = {
   warning: '#a36a1f',
   white: '#ffffff',
 };
-
-const seedTransactions: Transaction[] = [
-  {
-    id: 'tx_001',
-    title: '午餐',
-    merchant: '和府捞面',
-    amount: 42,
-    direction: 'expense',
-    category: '餐饮',
-    account: '微信支付',
-    source: 'wechat',
-    occurredAt: '今天 12:18',
-    confidence: 0.96,
-  },
-  {
-    id: 'tx_002',
-    title: '地铁通勤',
-    merchant: '上海地铁',
-    amount: 6,
-    direction: 'expense',
-    category: '交通',
-    account: '支付宝',
-    source: 'alipay',
-    occurredAt: '今天 08:42',
-    confidence: 0.91,
-  },
-  {
-    id: 'tx_003',
-    title: '项目结算',
-    merchant: '客户转账',
-    amount: 2800,
-    direction: 'income',
-    category: '兼职',
-    account: '招商银行',
-    source: 'bank',
-    occurredAt: '昨天 19:04',
-    confidence: 0.88,
-  },
-  {
-    id: 'tx_004',
-    title: '咖啡',
-    merchant: 'Manner Coffee',
-    amount: 18,
-    direction: 'expense',
-    category: '餐饮',
-    account: '微信支付',
-    source: 'ocr',
-    occurredAt: '昨天 15:36',
-    confidence: 0.76,
-  },
-];
-
-const importPreview: Transaction[] = [
-  {
-    id: 'import_001',
-    title: '超市采购',
-    merchant: '盒马鲜生',
-    amount: 128.6,
-    direction: 'expense',
-    category: '日用',
-    account: '支付宝',
-    source: 'alipay',
-    occurredAt: '04-27 20:12',
-    confidence: 0.94,
-  },
-  {
-    id: 'import_002',
-    title: '打车',
-    merchant: '滴滴出行',
-    amount: 31.5,
-    direction: 'expense',
-    category: '交通',
-    account: '微信支付',
-    source: 'wechat',
-    occurredAt: '04-27 18:44',
-    confidence: 0.89,
-  },
-  {
-    id: 'import_003',
-    title: '退款',
-    merchant: '淘宝',
-    amount: 59,
-    direction: 'income',
-    category: '退款',
-    account: '支付宝',
-    source: 'alipay',
-    occurredAt: '04-26 10:02',
-    confidence: 0.82,
-  },
-];
 
 const importOptions = [
   {
@@ -183,12 +90,14 @@ const importOptions = [
   },
 ];
 
-const categories = ['餐饮', '交通', '购物', '日用', '住房', '娱乐', '医疗', '收入'];
+const categories = [...expenseCategories, '收入'];
 const accounts = ['微信支付', '支付宝', '招商银行', '现金'];
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('home');
-  const [transactions, setTransactions] = useState<Transaction[]>(seedTransactions);
+  const [transactions, setTransactions] = useState<Transaction[]>(sampleTransactions);
+  const [preview, setPreview] = useState<Transaction[]>([]);
+  const [importStatus, setImportStatus] = useState('选择微信/支付宝 CSV，或先载入样例账单');
   const [isComposerOpen, setComposerOpen] = useState(false);
   const [draft, setDraft] = useState<DraftTransaction>({
     title: '',
@@ -215,6 +124,46 @@ export default function App() {
   const importedCount = transactions.filter((item) => item.source !== 'manual').length;
   const balance = totals.income - totals.expense;
 
+  const parseImportText = (text: string) => {
+    try {
+      const result = parseBillCsv(text);
+      const marked = markDuplicates(result.transactions, transactions);
+
+      setPreview(marked);
+      setActiveTab('import');
+      setImportStatus(
+        `${getSourceLabel(result.source)}账单：识别 ${result.totalRows} 行，${marked.length} 笔进入预览`,
+      );
+    } catch (error) {
+      setImportStatus('账单解析失败，请检查文件格式');
+      Alert.alert('解析失败', error instanceof Error ? error.message : '暂时无法识别这个文件');
+    }
+  };
+
+  const handlePickCsv = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+        type: ['text/csv', 'text/comma-separated-values', 'application/vnd.ms-excel', '*/*'],
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const asset = result.assets[0];
+      const text = await FileSystem.readAsStringAsync(asset.uri, {
+        encoding: FileSystem.EncodingType.UTF8,
+      });
+
+      parseImportText(text);
+    } catch (error) {
+      setImportStatus('读取文件失败');
+      Alert.alert('读取失败', error instanceof Error ? error.message : '无法读取这个文件');
+    }
+  };
+
   const handleAddTransaction = () => {
     const amount = Number.parseFloat(draft.amount);
 
@@ -224,6 +173,7 @@ export default function App() {
 
     const nextTransaction: Transaction = {
       id: `manual_${Date.now()}`,
+      bookId: 'default',
       title: draft.title.trim(),
       merchant: draft.title.trim(),
       amount,
@@ -232,7 +182,13 @@ export default function App() {
       account: draft.account,
       source: 'manual',
       occurredAt: '刚刚',
+      sourceHash: `manual_${Date.now()}`,
       confidence: 1,
+      status: 'ready',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      version: 1,
+      deviceId: 'mobile-manual',
     };
 
     setTransactions((current) => [nextTransaction, ...current]);
@@ -241,9 +197,16 @@ export default function App() {
   };
 
   const handleConfirmImport = () => {
-    const existingIds = new Set(transactions.map((item) => item.id));
-    const nextRecords = importPreview.filter((item) => !existingIds.has(item.id));
+    const nextRecords = preview.filter((item) => item.status !== 'duplicate');
+
+    if (nextRecords.length === 0) {
+      setImportStatus('没有可入账的交易');
+      return;
+    }
+
     setTransactions((current) => [...nextRecords, ...current]);
+    setPreview([]);
+    setImportStatus(`已确认导入 ${nextRecords.length} 笔`);
     setActiveTab('home');
   };
 
@@ -271,6 +234,8 @@ export default function App() {
               balance={balance}
               importedCount={importedCount}
               onAdd={() => setComposerOpen(true)}
+              onImport={() => setActiveTab('import')}
+              onSearch={() => setActiveTab('stats')}
               transactions={transactions}
               totals={totals}
             />
@@ -278,7 +243,11 @@ export default function App() {
           {activeTab === 'import' && (
             <ImportScreen
               onConfirm={handleConfirmImport}
-              preview={importPreview}
+              onLoadAlipaySample={() => parseImportText(sampleAlipayCsv)}
+              onLoadWechatSample={() => parseImportText(sampleWechatCsv)}
+              onPickCsv={handlePickCsv}
+              preview={preview}
+              status={importStatus}
             />
           )}
           {activeTab === 'stats' && (
@@ -305,12 +274,16 @@ function HomeScreen({
   balance,
   importedCount,
   onAdd,
+  onImport,
+  onSearch,
   transactions,
   totals,
 }: {
   balance: number;
   importedCount: number;
   onAdd: () => void;
+  onImport: () => void;
+  onSearch: () => void;
   transactions: Transaction[];
   totals: { expense: number; income: number };
 }) {
@@ -334,8 +307,8 @@ function HomeScreen({
 
       <View style={styles.quickActions}>
         <ActionButton icon={Plus} label="记一笔" onPress={onAdd} />
-        <ActionButton icon={Upload} label="导入账单" />
-        <ActionButton icon={Search} label="查流水" />
+        <ActionButton icon={Upload} label="导入账单" onPress={onImport} />
+        <ActionButton icon={Search} label="看统计" onPress={onSearch} />
       </View>
 
       <SectionHeader title="最近流水" action="全部" />
@@ -350,11 +323,22 @@ function HomeScreen({
 
 function ImportScreen({
   onConfirm,
+  onLoadAlipaySample,
+  onLoadWechatSample,
+  onPickCsv,
   preview,
+  status,
 }: {
   onConfirm: () => void;
+  onLoadAlipaySample: () => void;
+  onLoadWechatSample: () => void;
+  onPickCsv: () => void;
   preview: Transaction[];
+  status: string;
 }) {
+  const readyCount = preview.filter((item) => item.status !== 'duplicate').length;
+  const duplicateCount = preview.length - readyCount;
+
   return (
     <View style={styles.stack}>
       <View style={styles.importHero}>
@@ -364,14 +348,29 @@ function ImportScreen({
         <View style={styles.importHeroText}>
           <Text style={styles.importHeroTitle}>导入后先预览，再入账</Text>
           <Text style={styles.importHeroCopy}>
-            识别金额、商户、分类和重复记录，确认后写入本地账本。
+            {status}
           </Text>
         </View>
       </View>
 
+      <Pressable style={styles.primaryButtonStandalone} onPress={onPickCsv}>
+        <FileSpreadsheet color={colors.white} size={18} strokeWidth={2.5} />
+        <Text style={styles.primaryButtonText}>选择 CSV 账单文件</Text>
+      </Pressable>
+
       <View style={styles.importGrid}>
-        {importOptions.map((option) => (
-          <Pressable key={option.title} style={styles.importOption}>
+        {importOptions.map((option, index) => (
+          <Pressable
+            key={option.title}
+            style={styles.importOption}
+            onPress={
+              index === 0
+                ? onLoadWechatSample
+                : index === 1
+                  ? onLoadAlipaySample
+                  : undefined
+            }
+          >
             <View style={[styles.optionIcon, { backgroundColor: `${option.tone}1A` }]}>
               <option.icon color={option.tone} size={22} strokeWidth={2.3} />
             </View>
@@ -384,14 +383,28 @@ function ImportScreen({
         ))}
       </View>
 
-      <SectionHeader title="待确认样例" action={`${preview.length} 笔`} />
+      <SectionHeader
+        title="待确认交易"
+        action={preview.length > 0 ? `${readyCount} 可入账 · ${duplicateCount} 重复` : '暂无'}
+      />
       <View style={styles.previewPanel}>
-        {preview.map((transaction) => (
-          <TransactionRow key={transaction.id} compact transaction={transaction} />
-        ))}
-        <Pressable style={styles.primaryButton} onPress={onConfirm}>
+        {preview.length === 0 ? (
+          <View style={styles.emptyPreview}>
+            <Text style={styles.emptyPreviewTitle}>还没有待确认交易</Text>
+            <Text style={styles.emptyPreviewCopy}>先选择 CSV 文件，或点微信/支付宝样例体验流程。</Text>
+          </View>
+        ) : (
+          preview.map((transaction) => (
+            <TransactionRow key={transaction.id} compact transaction={transaction} />
+          ))
+        )}
+        <Pressable
+          disabled={readyCount === 0}
+          style={[styles.primaryButton, readyCount === 0 && styles.primaryButtonDisabled]}
+          onPress={onConfirm}
+        >
           <Check color={colors.white} size={18} strokeWidth={2.5} />
-          <Text style={styles.primaryButtonText}>确认导入 3 笔</Text>
+          <Text style={styles.primaryButtonText}>确认导入 {readyCount} 笔</Text>
         </Pressable>
       </View>
     </View>
@@ -513,7 +526,19 @@ function TransactionRow({
           <Text numberOfLines={1} style={styles.transactionMeta}>
             {transaction.merchant} · {transaction.category} · {transaction.account}
           </Text>
-          <Text style={styles.transactionTime}>{transaction.occurredAt}</Text>
+          <View style={styles.transactionRightMeta}>
+            {transaction.status && transaction.status !== 'ready' ? (
+              <Text
+                style={[
+                  styles.statusPill,
+                  transaction.status === 'duplicate' && styles.statusPillDanger,
+                ]}
+              >
+                {transaction.status === 'duplicate' ? '重复' : '待确认'}
+              </Text>
+            ) : null}
+            <Text style={styles.transactionTime}>{formatShortTime(transaction.occurredAt)}</Text>
+          </View>
         </View>
       </View>
     </Pressable>
@@ -724,6 +749,28 @@ function getHeaderTitle(tab: TabKey) {
     default:
       return '本地账本';
   }
+}
+
+function getSourceLabel(source: Transaction['source']) {
+  switch (source) {
+    case 'wechat':
+      return '微信';
+    case 'alipay':
+      return '支付宝';
+    case 'bank':
+      return '银行';
+    case 'ocr':
+      return '截图';
+    default:
+      return '通用';
+  }
+}
+
+function formatShortTime(value: string) {
+  if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
+    return value.slice(5, 16);
+  }
+  return value;
 }
 
 function formatMoney(value: number) {
@@ -980,6 +1027,27 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     letterSpacing: 0,
   },
+  transactionRightMeta: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    flexShrink: 0,
+    gap: 6,
+  },
+  statusPill: {
+    backgroundColor: '#f8ead2',
+    borderRadius: 999,
+    color: colors.warning,
+    fontSize: 10,
+    fontWeight: '900',
+    letterSpacing: 0,
+    overflow: 'hidden',
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+  },
+  statusPillDanger: {
+    backgroundColor: '#f8e4df',
+    color: colors.expense,
+  },
   transactionTime: {
     color: colors.muted,
     fontSize: 11,
@@ -1022,6 +1090,15 @@ const styles = StyleSheet.create({
   },
   importGrid: {
     gap: 10,
+  },
+  primaryButtonStandalone: {
+    alignItems: 'center',
+    backgroundColor: colors.accent,
+    borderRadius: 20,
+    flexDirection: 'row',
+    gap: 8,
+    justifyContent: 'center',
+    minHeight: 56,
   },
   importOption: {
     alignItems: 'center',
@@ -1066,6 +1143,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
   },
+  emptyPreview: {
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 24,
+  },
+  emptyPreviewTitle: {
+    color: colors.ink,
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  emptyPreviewCopy: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '600',
+    letterSpacing: 0,
+    lineHeight: 18,
+    textAlign: 'center',
+  },
   primaryButton: {
     alignItems: 'center',
     backgroundColor: colors.accent,
@@ -1075,6 +1172,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginVertical: 12,
     minHeight: 52,
+  },
+  primaryButtonDisabled: {
+    opacity: 0.45,
   },
   primaryButtonText: {
     color: colors.white,

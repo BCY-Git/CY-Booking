@@ -9,7 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@cy-booking/core": "file:../../packages/core",
+    "@cy-booking/core": "workspace:*",
     "lucide-react": "^0.468.0",
     "next": "^15.1.0",
     "react": "^19.0.0",

@@ -2,13 +2,17 @@
   "name": "cy-booking",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@10.30.2",
   "workspaces": [
     "apps/*",
     "packages/*"
   ],
   "scripts": {
-    "dev:web": "npm --workspace @cy-booking/web run dev",
-    "build:web": "npm --workspace @cy-booking/web run build",
-    "lint:web": "npm --workspace @cy-booking/web run lint"
+    "dev:web": "pnpm --filter @cy-booking/web dev",
+    "build:web": "pnpm --filter @cy-booking/web build",
+    "lint:web": "pnpm --filter @cy-booking/web lint",
+    "dev:mobile": "pnpm --filter mobile start",
+    "web:mobile": "pnpm --filter mobile web",
+    "typecheck:mobile": "pnpm --filter mobile typecheck"
   }
 }
