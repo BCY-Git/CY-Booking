@@ -13,6 +13,8 @@
       "backgroundColor": "#f6f3ec"
     },
     "ios": {
+      "bundleIdentifier": "com.bcy.cybooking",
+      "buildNumber": "1",
       "supportsTablet": true
     },
     "android": {

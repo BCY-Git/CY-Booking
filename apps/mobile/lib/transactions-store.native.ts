@@ -6,6 +6,24 @@ type TransactionRow = {
   payload: string;
 };
 
+type ImportJobRow = {
+  id: string;
+  source: Transaction['source'];
+  total_records: number;
+  imported_records: number;
+  duplicate_records: number;
+  created_at: string;
+};
+
+export type ImportJob = {
+  id: string;
+  source: Transaction['source'];
+  totalRecords: number;
+  importedRecords: number;
+  duplicateRecords: number;
+  createdAt: string;
+};
+
 let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 function getDb() {
@@ -49,6 +67,18 @@ export async function initializeTransactionsStore() {
 
     CREATE INDEX IF NOT EXISTS idx_transactions_occurred_at
       ON transactions(occurred_at);
+
+    CREATE TABLE IF NOT EXISTS import_jobs (
+      id TEXT PRIMARY KEY NOT NULL,
+      source TEXT NOT NULL,
+      total_records INTEGER NOT NULL,
+      imported_records INTEGER NOT NULL,
+      duplicate_records INTEGER NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_import_jobs_created_at
+      ON import_jobs(created_at);
   `);
 }
 
@@ -104,6 +134,55 @@ export async function saveTransactions(transactions: Transaction[]) {
       );
     }
   });
+}
+
+export async function deleteTransaction(transactionId: string) {
+  await initializeTransactionsStore();
+  const db = await getDb();
+  await db.runAsync('DELETE FROM transactions WHERE id = ?', transactionId);
+}
+
+export async function loadImportJobs(): Promise<ImportJob[]> {
+  await initializeTransactionsStore();
+  const db = await getDb();
+  const rows = await db.getAllAsync<ImportJobRow>(
+    'SELECT * FROM import_jobs ORDER BY created_at DESC LIMIT 20',
+  );
+
+  return rows.map((row) => ({
+    id: row.id,
+    source: row.source,
+    totalRecords: row.total_records,
+    importedRecords: row.imported_records,
+    duplicateRecords: row.duplicate_records,
+    createdAt: row.created_at,
+  }));
+}
+
+export async function saveImportJob(job: ImportJob) {
+  await initializeTransactionsStore();
+  const db = await getDb();
+
+  await db.runAsync(
+    `
+      INSERT OR REPLACE INTO import_jobs (
+        id,
+        source,
+        total_records,
+        imported_records,
+        duplicate_records,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [
+      job.id,
+      job.source,
+      job.totalRecords,
+      job.importedRecords,
+      job.duplicateRecords,
+      job.createdAt,
+    ],
+  );
 }
 
 export async function loadOrSeedTransactions(): Promise<Transaction[]> {

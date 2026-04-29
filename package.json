@@ -13,6 +13,9 @@
     "lint:web": "pnpm --filter @cy-booking/web lint",
     "dev:mobile": "pnpm --filter mobile start",
     "web:mobile": "pnpm --filter mobile web",
+    "ios:mobile": "pnpm --filter mobile ios",
+    "build:ios:preview": "pnpm --filter mobile build:ios:preview",
+    "build:ios:production": "pnpm --filter mobile build:ios:production",
     "typecheck:mobile": "pnpm --filter mobile typecheck"
   }
 }

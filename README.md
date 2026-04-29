@@ -59,10 +59,20 @@ http://localhost:8081
 - CSV 账单选择入口
 - 微信/支付宝样例账单解析
 - 导入预览确认
+- 导入历史
 - 重复交易提示
 - 交易流水和快速记账
+- 交易编辑和删除确认
 - 分类统计
 - 本地模式/云备份设置入口
+
+iOS 预览构建：
+
+```bash
+pnpm build:ios:preview
+```
+
+发起 EAS iOS 构建前需要先安装/登录 EAS CLI，并准备 Apple Developer 账号。
 
 ### Web 辅助预览
 
@@ -85,8 +95,8 @@ http://localhost:3000
 
 ## 下一步
 
-1. 接入本地持久化，优先 Expo SQLite。
-2. 用真实脱敏账单样本测试 CSV 解析兼容性。
-3. 增加 XLSX/PDF 解析入口。
-4. 增加截图 OCR 单笔识别。
+1. 用真实脱敏账单样本测试 CSV 解析兼容性。
+2. 增加 XLSX/PDF 解析入口。
+3. 增加截图 OCR 单笔识别。
+4. 完成 iOS preview 构建和真机内测。
 5. 再决定是否同步启动 NestJS 后端。

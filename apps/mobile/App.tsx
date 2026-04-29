@@ -39,8 +39,12 @@ import {
   type Transaction,
 } from '@cy-booking/core';
 import {
+  deleteTransaction,
+  loadImportJobs,
   loadOrSeedTransactions,
+  saveImportJob,
   saveTransactions,
+  type ImportJob,
 } from './lib/transactions-store';
 
 type TabKey = 'home' | 'import' | 'stats' | 'settings';
@@ -50,6 +54,11 @@ type DraftTransaction = {
   amount: string;
   category: string;
   account: string;
+};
+
+type EditTransactionDraft = DraftTransaction & {
+  merchant: string;
+  direction: Transaction['direction'];
 };
 
 const colors = {
@@ -99,10 +108,21 @@ const accounts = ['微信支付', '支付宝', '招商银行', '现金'];
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabKey>('home');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const [preview, setPreview] = useState<Transaction[]>([]);
   const [importStatus, setImportStatus] = useState('选择微信/支付宝 CSV，或先载入样例账单');
   const [storageStatus, setStorageStatus] = useState('正在读取本地账本');
   const [isComposerOpen, setComposerOpen] = useState(false);
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [isDeleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [editDraft, setEditDraft] = useState<EditTransactionDraft>({
+    title: '',
+    merchant: '',
+    amount: '',
+    category: '餐饮',
+    account: '微信支付',
+    direction: 'expense',
+  });
   const [draft, setDraft] = useState<DraftTransaction>({
     title: '',
     amount: '',
@@ -114,13 +134,18 @@ export default function App() {
     let isMounted = true;
 
     loadOrSeedTransactions()
-      .then((records) => {
+      .then(async (records) => {
         if (!isMounted) {
           return;
         }
 
         setTransactions(records);
         setStorageStatus(`本地已保存 ${records.length} 笔`);
+
+        const jobs = await loadImportJobs();
+        if (isMounted) {
+          setImportJobs(jobs);
+        }
       })
       .catch((error) => {
         if (!isMounted) {
@@ -237,6 +262,84 @@ export default function App() {
     setComposerOpen(false);
   };
 
+  const openTransactionEditor = (transaction: Transaction) => {
+    setEditingTransaction(transaction);
+    setEditDraft({
+      title: transaction.title,
+      merchant: transaction.merchant,
+      amount: String(transaction.amount),
+      category: transaction.category,
+      account: transaction.account,
+      direction: transaction.direction,
+    });
+  };
+
+  const handleUpdateTransaction = async () => {
+    if (!editingTransaction) {
+      return;
+    }
+
+    const amount = Number.parseFloat(editDraft.amount);
+
+    if (!editDraft.title.trim() || !editDraft.merchant.trim() || Number.isNaN(amount) || amount <= 0) {
+      Alert.alert('无法保存', '请补全名称、交易对方和有效金额');
+      return;
+    }
+
+    const updatedAt = new Date().toISOString();
+    const updatedTransaction: Transaction = {
+      ...editingTransaction,
+      title: editDraft.title.trim(),
+      merchant: editDraft.merchant.trim(),
+      amount,
+      direction: editDraft.direction,
+      category: editDraft.category,
+      account: editDraft.account,
+      updatedAt,
+      version: editingTransaction.version + 1,
+    };
+
+    try {
+      await saveTransactions([updatedTransaction]);
+      setTransactions((current) =>
+        current.map((transaction) =>
+          transaction.id === updatedTransaction.id ? updatedTransaction : transaction,
+        ),
+      );
+      setStorageStatus('刚刚更新 1 笔');
+      setEditingTransaction(null);
+      setDeleteConfirmOpen(false);
+    } catch (error) {
+      Alert.alert('保存失败', error instanceof Error ? error.message : '无法更新本地账本');
+    }
+  };
+
+  const handleDeleteTransaction = () => {
+    if (!editingTransaction) {
+      return;
+    }
+
+    setDeleteConfirmOpen(true);
+  };
+
+  const handleConfirmDeleteTransaction = async () => {
+    if (!editingTransaction) {
+      return;
+    }
+
+    const transaction = editingTransaction;
+
+    try {
+      await deleteTransaction(transaction.id);
+      setTransactions((current) => current.filter((item) => item.id !== transaction.id));
+      setStorageStatus('刚刚删除 1 笔');
+      setDeleteConfirmOpen(false);
+      setEditingTransaction(null);
+    } catch (error) {
+      Alert.alert('删除失败', error instanceof Error ? error.message : '无法删除本地记录');
+    }
+  };
+
   const handleConfirmImport = async () => {
     const nextRecords = preview.filter((item) => item.status !== 'duplicate');
 
@@ -247,6 +350,16 @@ export default function App() {
 
     try {
       await saveTransactions(nextRecords);
+      const job: ImportJob = {
+        id: `import_job_${Date.now()}`,
+        source: nextRecords[0]?.source ?? 'csv',
+        totalRecords: preview.length,
+        importedRecords: nextRecords.length,
+        duplicateRecords: preview.length - nextRecords.length,
+        createdAt: new Date().toISOString(),
+      };
+      await saveImportJob(job);
+      setImportJobs((current) => [job, ...current].slice(0, 20));
       setStorageStatus(`刚刚保存 ${nextRecords.length} 笔`);
     } catch (error) {
       Alert.alert('保存失败', error instanceof Error ? error.message : '无法写入本地账本');
@@ -285,6 +398,7 @@ export default function App() {
               onAdd={() => setComposerOpen(true)}
               onImport={() => setActiveTab('import')}
               onSearch={() => setActiveTab('stats')}
+              onTransactionPress={openTransactionEditor}
               storageStatus={storageStatus}
               transactions={transactions}
               totals={totals}
@@ -292,6 +406,7 @@ export default function App() {
           )}
           {activeTab === 'import' && (
             <ImportScreen
+              importJobs={importJobs}
               onConfirm={handleConfirmImport}
               onLoadAlipaySample={() => parseImportText(sampleAlipayCsv)}
               onLoadWechatSample={() => parseImportText(sampleWechatCsv)}
@@ -316,6 +431,23 @@ export default function App() {
         onClose={() => setComposerOpen(false)}
         onSubmit={handleAddTransaction}
       />
+      <TransactionEditorModal
+        draft={editDraft}
+        isOpen={editingTransaction !== null}
+        onChange={setEditDraft}
+        onClose={() => {
+          setDeleteConfirmOpen(false);
+          setEditingTransaction(null);
+        }}
+        onDelete={handleDeleteTransaction}
+        onSubmit={handleUpdateTransaction}
+      />
+      <DeleteConfirmModal
+        isOpen={isDeleteConfirmOpen}
+        title={editingTransaction?.title ?? ''}
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={handleConfirmDeleteTransaction}
+      />
     </SafeAreaView>
   );
 }
@@ -326,6 +458,7 @@ function HomeScreen({
   onAdd,
   onImport,
   onSearch,
+  onTransactionPress,
   storageStatus,
   transactions,
   totals,
@@ -335,6 +468,7 @@ function HomeScreen({
   onAdd: () => void;
   onImport: () => void;
   onSearch: () => void;
+  onTransactionPress: (transaction: Transaction) => void;
   storageStatus: string;
   transactions: Transaction[];
   totals: { expense: number; income: number };
@@ -373,7 +507,11 @@ function HomeScreen({
           </View>
         ) : (
           transactions.map((transaction) => (
-            <TransactionRow key={transaction.id} transaction={transaction} />
+            <TransactionRow
+              key={transaction.id}
+              onPress={() => onTransactionPress(transaction)}
+              transaction={transaction}
+            />
           ))
         )}
       </View>
@@ -382,6 +520,7 @@ function HomeScreen({
 }
 
 function ImportScreen({
+  importJobs,
   onConfirm,
   onLoadAlipaySample,
   onLoadWechatSample,
@@ -389,6 +528,7 @@ function ImportScreen({
   preview,
   status,
 }: {
+  importJobs: ImportJob[];
   onConfirm: () => void;
   onLoadAlipaySample: () => void;
   onLoadWechatSample: () => void;
@@ -466,6 +606,28 @@ function ImportScreen({
           <Check color={colors.white} size={18} strokeWidth={2.5} />
           <Text style={styles.primaryButtonText}>确认导入 {readyCount} 笔</Text>
         </Pressable>
+      </View>
+
+      <SectionHeader title="导入历史" action={importJobs.length > 0 ? `${importJobs.length} 次` : '暂无'} />
+      <View style={styles.historyPanel}>
+        {importJobs.length === 0 ? (
+          <View style={styles.emptyPreview}>
+            <Text style={styles.emptyPreviewTitle}>还没有导入记录</Text>
+            <Text style={styles.emptyPreviewCopy}>确认导入后，这里会记录来源、入账笔数和重复笔数。</Text>
+          </View>
+        ) : (
+          importJobs.map((job) => (
+            <View key={job.id} style={styles.historyRow}>
+              <View>
+                <Text style={styles.historyTitle}>{getSourceLabel(job.source)}账单导入</Text>
+                <Text style={styles.historyMeta}>{formatShortTime(job.createdAt)}</Text>
+              </View>
+              <Text style={styles.historyCount}>
+                {job.importedRecords} 入账 · {job.duplicateRecords} 重复
+              </Text>
+            </View>
+          ))
+        )}
       </View>
     </View>
   );
@@ -560,15 +722,21 @@ function SettingsScreen() {
 
 function TransactionRow({
   compact = false,
+  onPress,
   transaction,
 }: {
   compact?: boolean;
+  onPress?: () => void;
   transaction: Transaction;
 }) {
   const isIncome = transaction.direction === 'income';
 
   return (
-    <Pressable style={[styles.transactionRow, compact && styles.transactionRowCompact]}>
+    <Pressable
+      disabled={!onPress}
+      style={[styles.transactionRow, compact && styles.transactionRowCompact]}
+      onPress={onPress}
+    >
       <View style={styles.transactionIcon}>
         <ReceiptText color={colors.accent} size={18} strokeWidth={2.2} />
       </View>
@@ -678,6 +846,153 @@ function ComposerModal({
             </Pressable>
             <Pressable style={styles.primaryButtonExpanded} onPress={onSubmit}>
               <Text style={styles.primaryButtonText}>保存</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function TransactionEditorModal({
+  draft,
+  isOpen,
+  onChange,
+  onClose,
+  onDelete,
+  onSubmit,
+}: {
+  draft: EditTransactionDraft;
+  isOpen: boolean;
+  onChange: (draft: EditTransactionDraft) => void;
+  onClose: () => void;
+  onDelete: () => void;
+  onSubmit: () => void;
+}) {
+  return (
+    <Modal animationType="slide" transparent visible={isOpen} onRequestClose={onClose}>
+      <View style={styles.modalBackdrop}>
+        <View style={styles.modalSheet}>
+          <View style={styles.modalHandle} />
+          <Text style={styles.modalTitle}>编辑交易</Text>
+
+          <ScrollView style={styles.modalBody} showsVerticalScrollIndicator={false}>
+            <Text style={styles.inputLabel}>收支类型</Text>
+            <View style={styles.chipRow}>
+              {[
+                { label: '支出', value: 'expense' as const },
+                { label: '收入', value: 'income' as const },
+                { label: '转账', value: 'transfer' as const },
+              ].map((item) => (
+                <ChoiceChip
+                  key={item.value}
+                  active={draft.direction === item.value}
+                  label={item.label}
+                  onPress={() => onChange({ ...draft, direction: item.value })}
+                />
+              ))}
+            </View>
+
+            <Text style={styles.inputLabel}>名称</Text>
+            <TextInput
+              placeholder="例如 午餐、咖啡、工资"
+              placeholderTextColor="#9aa39e"
+              style={styles.input}
+              value={draft.title}
+              onChangeText={(title) => onChange({ ...draft, title })}
+            />
+
+            <Text style={styles.inputLabel}>交易对方</Text>
+            <TextInput
+              placeholder="例如 瑞幸咖啡、客户转账"
+              placeholderTextColor="#9aa39e"
+              style={styles.input}
+              value={draft.merchant}
+              onChangeText={(merchant) => onChange({ ...draft, merchant })}
+            />
+
+            <Text style={styles.inputLabel}>金额</Text>
+            <TextInput
+              keyboardType="decimal-pad"
+              placeholder="0.00"
+              placeholderTextColor="#9aa39e"
+              style={styles.input}
+              value={draft.amount}
+              onChangeText={(amount) => onChange({ ...draft, amount })}
+            />
+
+            <Text style={styles.inputLabel}>分类</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={styles.chipRow}>
+                {categories.map((category) => (
+                  <ChoiceChip
+                    key={category}
+                    active={draft.category === category}
+                    label={category}
+                    onPress={() => onChange({ ...draft, category })}
+                  />
+                ))}
+              </View>
+            </ScrollView>
+
+            <Text style={styles.inputLabel}>账户</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              <View style={styles.chipRow}>
+                {accounts.map((account) => (
+                  <ChoiceChip
+                    key={account}
+                    active={draft.account === account}
+                    label={account}
+                    onPress={() => onChange({ ...draft, account })}
+                  />
+                ))}
+              </View>
+            </ScrollView>
+          </ScrollView>
+
+          <Pressable style={styles.modalDangerAction} onPress={onDelete}>
+            <Text style={styles.dangerButtonText}>删除这笔交易</Text>
+          </Pressable>
+
+          <View style={styles.modalActions}>
+            <Pressable style={styles.secondaryButton} onPress={onClose}>
+              <Text style={styles.secondaryButtonText}>取消</Text>
+            </Pressable>
+            <Pressable style={styles.primaryButtonExpanded} onPress={onSubmit}>
+              <Text style={styles.primaryButtonText}>保存</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function DeleteConfirmModal({
+  isOpen,
+  onCancel,
+  onConfirm,
+  title,
+}: {
+  isOpen: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  title: string;
+}) {
+  return (
+    <Modal animationType="fade" transparent visible={isOpen} onRequestClose={onCancel}>
+      <View style={styles.confirmBackdrop}>
+        <View style={styles.confirmDialog}>
+          <Text style={styles.confirmTitle}>删除交易</Text>
+          <Text style={styles.confirmCopy}>
+            确定删除「{title || '这笔交易'}」吗？这个操作只会删除本机记录。
+          </Text>
+          <View style={styles.modalActions}>
+            <Pressable style={styles.secondaryButton} onPress={onCancel}>
+              <Text style={styles.secondaryButtonText}>先保留</Text>
+            </Pressable>
+            <Pressable style={styles.confirmDangerButton} onPress={onConfirm}>
+              <Text style={styles.confirmDangerButtonText}>删除</Text>
             </Pressable>
           </View>
         </View>
@@ -828,7 +1143,7 @@ function getSourceLabel(source: Transaction['source']) {
 
 function formatShortTime(value: string) {
   if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
-    return value.slice(5, 16);
+    return value.slice(5, 16).replace('T', ' ');
   }
   return value;
 }
@@ -1210,6 +1525,44 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 6,
   },
+  historyPanel: {
+    backgroundColor: colors.white,
+    borderColor: colors.line,
+    borderRadius: 24,
+    borderWidth: 1,
+    overflow: 'hidden',
+  },
+  historyRow: {
+    alignItems: 'center',
+    borderBottomColor: colors.line,
+    borderBottomWidth: 1,
+    flexDirection: 'row',
+    gap: 12,
+    justifyContent: 'space-between',
+    minHeight: 68,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  historyTitle: {
+    color: colors.ink,
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  historyMeta: {
+    color: colors.muted,
+    fontSize: 12,
+    fontWeight: '700',
+    letterSpacing: 0,
+    marginTop: 4,
+  },
+  historyCount: {
+    color: colors.accent,
+    flexShrink: 0,
+    fontSize: 12,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
   emptyPreview: {
     alignItems: 'center',
     gap: 6,
@@ -1396,14 +1749,49 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
   },
+  confirmBackdrop: {
+    alignItems: 'center',
+    backgroundColor: 'rgba(23,32,27,0.48)',
+    flex: 1,
+    justifyContent: 'center',
+    padding: 22,
+  },
+  confirmDialog: {
+    backgroundColor: colors.white,
+    borderRadius: 24,
+    maxWidth: 360,
+    padding: 20,
+    width: '100%',
+    ...shadow,
+  },
+  confirmTitle: {
+    color: colors.ink,
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  confirmCopy: {
+    color: colors.muted,
+    fontSize: 14,
+    fontWeight: '700',
+    letterSpacing: 0,
+    lineHeight: 21,
+    marginTop: 10,
+  },
   modalSheet: {
     backgroundColor: colors.soft,
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,
+    maxHeight: '92%',
     maxWidth: 430,
     padding: 22,
     paddingBottom: 34,
     width: '100%',
+  },
+  modalBody: {
+    flexShrink: 1,
+    marginHorizontal: -2,
+    paddingHorizontal: 2,
   },
   modalHandle: {
     alignSelf: 'center',
@@ -1470,6 +1858,36 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginTop: 22,
+  },
+  modalDangerAction: {
+    alignItems: 'center',
+    backgroundColor: '#f8e4df',
+    borderColor: '#f0c7bd',
+    borderRadius: 18,
+    borderWidth: 1,
+    justifyContent: 'center',
+    marginTop: 18,
+    minHeight: 52,
+  },
+  dangerButtonText: {
+    color: colors.expense,
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0,
+  },
+  confirmDangerButton: {
+    alignItems: 'center',
+    backgroundColor: colors.expense,
+    borderRadius: 18,
+    flex: 1,
+    justifyContent: 'center',
+    minHeight: 52,
+  },
+  confirmDangerButtonText: {
+    color: colors.white,
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0,
   },
   secondaryButton: {
     alignItems: 'center',

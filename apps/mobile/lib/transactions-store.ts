@@ -1,6 +1,16 @@
 import { sampleTransactions, type Transaction } from '@cy-booking/core';
 
 const STORAGE_KEY = 'cy-booking.transactions.v1';
+const IMPORT_JOBS_KEY = 'cy-booking.import-jobs.v1';
+
+export type ImportJob = {
+  id: string;
+  source: Transaction['source'];
+  totalRecords: number;
+  importedRecords: number;
+  duplicateRecords: number;
+  createdAt: string;
+};
 
 function sortTransactions(transactions: Transaction[]) {
   return [...transactions].sort((a, b) => {
@@ -58,6 +68,32 @@ export async function saveTransactions(transactions: Transaction[]) {
   }
 
   writeStoredTransactions([...byHash.values()]);
+}
+
+export async function deleteTransaction(transactionId: string) {
+  writeStoredTransactions(readStoredTransactions().filter((transaction) => transaction.id !== transactionId));
+}
+
+export async function loadImportJobs(): Promise<ImportJob[]> {
+  if (typeof window === 'undefined') {
+    return [];
+  }
+
+  const raw = window.localStorage.getItem(IMPORT_JOBS_KEY);
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    return JSON.parse(raw) as ImportJob[];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveImportJob(job: ImportJob) {
+  const jobs = await loadImportJobs();
+  window.localStorage.setItem(IMPORT_JOBS_KEY, JSON.stringify([job, ...jobs].slice(0, 20)));
 }
 
 export async function loadOrSeedTransactions(): Promise<Transaction[]> {
